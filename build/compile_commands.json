@@ -1,7 +1,0 @@
-[
-{
-  "directory": "/home/tfm/llvm-pass-skeleton/build/pass",
-  "command": "/usr/bin/clang++  -I/usr/lib/llvm-14/include -g -fPIC   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS  -fno-exceptions -std=gnu++17 -o CMakeFiles/SlowPass.dir/main.cpp.o -c /home/tfm/llvm-pass-skeleton/pass/main.cpp",
-  "file": "/home/tfm/llvm-pass-skeleton/pass/main.cpp"
-}
-]
