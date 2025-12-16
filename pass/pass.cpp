@@ -5,6 +5,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Scalar/SimplifyCFG.h"
 #include "predicatedSSA.h"
+#include "slpVectorizer.h"
 
 using namespace llvm;
 
@@ -15,6 +16,15 @@ struct SuperVectorizationPass : public PassInfoMixin<SuperVectorizationPass> {
         for (auto &F : M) {
             SSAFunction* PredF = convertToPredicatedSSA(F);
             PredicatedSSAPrinter::print(PredF, errs());
+            
+            // Perform SLP vectorization
+            SLPPacker packer;
+            auto packs = packer.packInstructions(*PredF, 4); // assuming lane width 4
+            errs() << "Found " << packs.size() << " vector packs\n";
+            for (const auto& pack : packs) {
+                errs() << "Pack: opcode=" << ", size=" << pack.instructions.size() << "\n";
+            }
+            
             lowerToIR(PredF, F);
         }
         return PreservedAnalyses::all();
