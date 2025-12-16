@@ -24,41 +24,32 @@ define dso_local i32 @main() #0 {
   store i32 0, i32* %2, align 4
   br label %4
 
-4:                                                ; preds = %15, %0
+4:                                                ; preds = %10, %0
   %5 = load i32, i32* %2, align 4
   %6 = icmp slt i32 %5, 1000
-  br i1 %6, label %7, label %18
+  br i1 %6, label %7, label %13
 
 7:                                                ; preds = %4
   %8 = load i32, i32* %2, align 4
   %9 = call i32 @test(i32 noundef %8)
   store i32 %9, i32* %3, align 4
-  %10 = load i32, i32* %3, align 4
-  %11 = srem i32 %10, 16
-  %12 = icmp ne i32 %11, 0
-  br i1 %12, label %13, label %14
-
-13:                                               ; preds = %7
   store i32 -1, i32* %1, align 4
-  br label %20
-
-14:                                               ; preds = %7
   br label %15
 
-15:                                               ; preds = %14
-  %16 = load i32, i32* %2, align 4
-  %17 = add nsw i32 %16, 1
-  store i32 %17, i32* %2, align 4
+10:                                               ; No predecessors!
+  %11 = load i32, i32* %2, align 4
+  %12 = add nsw i32 %11, 1
+  store i32 %12, i32* %2, align 4
   br label %4, !llvm.loop !6
 
-18:                                               ; preds = %4
-  %19 = call i32 @test(i32 noundef 7)
-  store i32 %19, i32* %1, align 4
-  br label %20
+13:                                               ; preds = %4
+  %14 = call i32 @test(i32 noundef 7)
+  store i32 %14, i32* %1, align 4
+  br label %15
 
-20:                                               ; preds = %18, %13
-  %21 = load i32, i32* %1, align 4
-  ret i32 %21
+15:                                               ; preds = %13, %7
+  %16 = load i32, i32* %1, align 4
+  ret i32 %16
 }
 
 attributes #0 = { noinline nounwind optnone uwtable "frame-pointer"="all" "min-legal-vector-width"="0" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }

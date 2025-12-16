@@ -281,6 +281,9 @@ private:
     SSAPredicate* getEdgePredicate(BasicBlock* from, BasicBlock* to)
     {
         Loop* loop = LI.getLoopFor(from);
+        if (!loop) {
+            return edgeCondition(from, to);
+        }
         if (DT.dominates(to, from)) {
             return truth();
         }
@@ -715,7 +718,7 @@ public:
                 Instruction *clone = (*instr)->clone();
                 VMap[*instr] = clone;
                 RemapInstruction(clone, VMap, RF_NoModuleLevelChanges);
-                errs() << "Inserting instruction: " << *clone << "\n";
+                //errs() << "Inserting instruction: " << *clone << "\n";
                 block->getInstList().push_back(clone);
             }
         }
@@ -768,7 +771,7 @@ public:
                 Instruction *clone = (*instr)->clone();
                 VMap[*instr] = clone;
                 RemapInstruction(clone, VMap, RF_NoModuleLevelChanges);
-                errs() << "Inserting instruction: " << *clone << "\n";
+                //errs() << "Inserting instruction: " << *clone << "\n";
                 currentBlock->getInstList().push_back(clone);
             }
         }
@@ -799,19 +802,19 @@ void lowerToIR(SSAFunction *function, llvm::Function &llvmFunc)
     converter.lowerToIR(function, newEntry, llvmFunc.getContext());
     newEntry->moveBefore(&llvmFunc.getEntryBlock());
     //verifyFunction(llvmFunc, &errs());
-    errs() << llvmFunc << "\n";
-    errs() << "We done lowering to IR.\n";
+    //errs() << llvmFunc << "\n";
+    //errs() << "We done lowering to IR.\n";
     for (auto *BB : OldBlocks)
         BB->dropAllReferences();
     for (auto *BB : OldBlocks)
         BB->eraseFromParent();
-    errs() << llvmFunc << "\n";
+    //errs() << llvmFunc << "\n";
     std::vector<BasicBlock*> blocksToErase;
     for (auto &BB : llvmFunc)
         if (predecessors(&BB).empty() && &BB != &llvmFunc.getEntryBlock())
             blocksToErase.push_back(&BB);
-    //for (auto *BB : blocksToErase)
-      //  BB->eraseFromParent();
+    for (auto *BB : blocksToErase)
+        BB->eraseFromParent();
     verifyFunction(llvmFunc, &errs());
-    errs() << "We done frfr.\n";
+    //errs() << "We done frfr.\n";
 }
