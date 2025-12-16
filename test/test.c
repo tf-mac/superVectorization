@@ -6,10 +6,13 @@ int test(int x) {
     return y;
 }
 int main() {
-    for (int i = 0; i < 1000; ++i) {
+    for (int i = 0; i < 1000000000; ++i) {
         int j = test(i);
         if (j < 0) {
-            return -1;
+            j += i;
+        }
+        if (j < 0) {
+            j += i;
         }
     }
     return test(7);

@@ -15,16 +15,10 @@ struct SuperVectorizationPass : public PassInfoMixin<SuperVectorizationPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
         for (auto &F : M) {
             SSAFunction* PredF = convertToPredicatedSSA(F);
-            PredicatedSSAPrinter::print(PredF, errs());
-            
-            // Perform SLP vectorization
+            //PredicatedSSAPrinter::print(PredF, errs());
             SLPPacker packer;
-            auto packs = packer.packInstructions(*PredF, 4); // assuming lane width 4
+            auto packs = packer.packInstructions(*PredF, 4);
             errs() << "Found " << packs.size() << " vector packs\n";
-            for (const auto& pack : packs) {
-                errs() << "Pack: opcode=" << ", size=" << pack.instructions.size() << "\n";
-            }
-            
             lowerToIR(PredF, F);
         }
         return PreservedAnalyses::all();
@@ -48,13 +42,16 @@ llvmGetPassPluginInfo() {
                             LoopSimplifyPass()));
                         MPM.addPass(SuperVectorizationPass());
                         MPM.addPass(createModuleToFunctionPassAdaptor(
-                            SimplifyCFGPass()));
+                            LoopSimplifyPass()));
+                        FunctionPassManager FPM;
+
+                        
                         return true;   
                     }
                     return false;
                 });
             
-            
+            PB.buildPerModuleDefaultPipeline(OptimizationLevel::O2);
         }
     };
 }

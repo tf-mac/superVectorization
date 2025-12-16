@@ -24,10 +24,10 @@ define dso_local i32 @main() #0 {
   store i32 0, i32* %2, align 4
   br label %4
 
-4:                                                ; preds = %14, %0
+4:                                                ; preds = %24, %0
   %5 = load i32, i32* %2, align 4
-  %6 = icmp slt i32 %5, 1000
-  br i1 %6, label %7, label %17
+  %6 = icmp slt i32 %5, 1000000000
+  br i1 %6, label %7, label %27
 
 7:                                                ; preds = %4
   %8 = load i32, i32* %2, align 4
@@ -35,29 +35,39 @@ define dso_local i32 @main() #0 {
   store i32 %9, i32* %3, align 4
   %10 = load i32, i32* %3, align 4
   %11 = icmp slt i32 %10, 0
-  br i1 %11, label %12, label %13
+  br i1 %11, label %12, label %16
 
 12:                                               ; preds = %7
-  store i32 -1, i32* %1, align 4
-  br label %19
+  %13 = load i32, i32* %2, align 4
+  %14 = load i32, i32* %3, align 4
+  %15 = add nsw i32 %14, %13
+  store i32 %15, i32* %3, align 4
+  br label %16
 
-13:                                               ; preds = %7
-  br label %14
+16:                                               ; preds = %12, %7
+  %17 = load i32, i32* %3, align 4
+  %18 = icmp slt i32 %17, 0
+  br i1 %18, label %19, label %23
 
-14:                                               ; preds = %13
-  %15 = load i32, i32* %2, align 4
-  %16 = add nsw i32 %15, 1
-  store i32 %16, i32* %2, align 4
+19:                                               ; preds = %16
+  %20 = load i32, i32* %2, align 4
+  %21 = load i32, i32* %3, align 4
+  %22 = add nsw i32 %21, %20
+  store i32 %22, i32* %3, align 4
+  br label %23
+
+23:                                               ; preds = %19, %16
+  br label %24
+
+24:                                               ; preds = %23
+  %25 = load i32, i32* %2, align 4
+  %26 = add nsw i32 %25, 1
+  store i32 %26, i32* %2, align 4
   br label %4, !llvm.loop !6
 
-17:                                               ; preds = %4
-  %18 = call i32 @test(i32 noundef 7)
-  store i32 %18, i32* %1, align 4
-  br label %19
-
-19:                                               ; preds = %17, %12
-  %20 = load i32, i32* %1, align 4
-  ret i32 %20
+27:                                               ; preds = %4
+  %28 = call i32 @test(i32 noundef 7)
+  ret i32 %28
 }
 
 attributes #0 = { noinline nounwind optnone uwtable "frame-pointer"="all" "min-legal-vector-width"="0" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
