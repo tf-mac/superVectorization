@@ -9,7 +9,7 @@ int main() {
     for (int i = 0; i < 1000; ++i) {
         int j = test(i);
         if (j % 16 != 0) {
-            printf("Error: %d is not multiple of 16\n", j);
+            return -1;
         }
     }
     return test(7);

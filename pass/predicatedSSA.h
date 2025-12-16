@@ -65,20 +65,56 @@ public:
             os << "\n";
         }
     }
+    static void predicateToString(SSAPredicate* pred, llvm::raw_fd_ostream& os) {
+        if (!pred) {
+            os << "true";
+            return;
+        }
+        
+        switch (pred->kind) {
+            case SSAPredicate::True:
+                os <<"true";
+                return;
+            case SSAPredicate::Condition:
+                if (pred->condition && pred->condition->hasName()) {
+                    os << ("%" + pred->condition->getName().str());
+                }
+                os << *pred->condition;
+                return;
+            case SSAPredicate::Not:
+                os << "!(";
+                predicateToString(pred->left, os);
+                os << ")";
+                return;
+            case SSAPredicate::And:
+                os << "(";
+                predicateToString(pred->left, os);
+                os << " && ";
+                predicateToString(pred->right, os);
+                os << ")";
+                return;
+            case SSAPredicate::Or:
+                os << "(";
+                predicateToString(pred->left, os);
+                os << " || ";
+                predicateToString(pred->right, os);
+                os << ")";
+                return;
+            default:
+                os << "unknown";
+        }
+    }
 
 private:
     static void itemToString(Item* item, llvm::raw_fd_ostream& os, int loopDepth) {
-        // Add indentation for loops
         for (int i = 0; i < loopDepth; i++) {
             os << "  ";
         }
         
-        // Print predicate
         os << "[";
-        os << predicateToString(item->Predicate);
+        predicateToString(item->Predicate, os);
         os << "] ";
         
-        // Print content
         if (std::holds_alternative<llvm::Instruction*>(item->content)) {
             auto* inst = std::get<llvm::Instruction*>(item->content);
             os << "Instruction: " << *inst; 
@@ -94,32 +130,11 @@ private:
             }
             os << "}";
             if (loop->whileCondition) {
-                os << " while " << predicateToString(loop->whileCondition);
+                os << " while ";
+                predicateToString(loop->whileCondition, os);
             }
         }
     }
 
-    static std::string predicateToString(SSAPredicate* pred) {
-        if (!pred) return "true";
-        
-        switch (pred->kind) {
-            case SSAPredicate::True:
-                return "true";
-            case SSAPredicate::Condition:
-                if (pred->condition && pred->condition->hasName()) {
-                    return "%" + pred->condition->getName().str();
-                }
-                return "cond";
-            case SSAPredicate::Not:
-                return "!(" + predicateToString(pred->left) + ")";
-            case SSAPredicate::And:
-                return "(" + predicateToString(pred->left) + " && " + 
-                       predicateToString(pred->right) + ")";
-            case SSAPredicate::Or:
-                return "(" + predicateToString(pred->left) + " || " + 
-                       predicateToString(pred->right) + ")";
-            default:
-                return "unknown";
-        }
-    }
+    
 };

@@ -13,17 +13,9 @@ struct SuperVectorizationPass : public PassInfoMixin<SuperVectorizationPass> {
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
         for (auto &F : M) {
             SSAFunction* PredF = convertToPredicatedSSA(F);
-            // for (auto I : PredF->items) {
-            //     if(auto instr = std::get_if<llvm::Instruction*>(&I.content)) {
-            //         errs() << (**instr) << "\n";
-            //     } else if(auto loop = std::get_if<SSALoop*>(&I.content)){
-            //         errs() << "LOOP " << (*loop)->bodyItems.size() << "\n";
-            //     }
-            // }
             PredicatedSSAPrinter::print(PredF, errs());
-            //lowerToIR(PredF, F);
+            lowerToIR(PredF, F);
         }
-
         return PreservedAnalyses::all();
     };
 };
@@ -41,6 +33,8 @@ llvmGetPassPluginInfo() {
                 [](StringRef Name, ModulePassManager &MPM,
                    ArrayRef<PassBuilder::PipelineElement>) {
                     if (Name == "super-vectorization") {
+                        MPM.addPass(createModuleToFunctionPassAdaptor(
+                            LoopSimplifyPass()));
                         MPM.addPass(SuperVectorizationPass());
                         return true;   
                     }
