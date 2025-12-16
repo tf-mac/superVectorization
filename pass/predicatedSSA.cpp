@@ -211,43 +211,9 @@ private:
         return pred;
     }
 
-    std::vector<llvm::BasicBlock *> getPostDominanceFrontier(llvm::BasicBlock *BB)
-    {
-        std::vector<BasicBlock *> pdf;
-        std::unordered_set<BasicBlock*> checked;
-        std::queue<BasicBlock*> worklist;
-        checked.insert(BB);
-        for (BasicBlock* i : predecessors(BB)) {
-            worklist.push(i);
-        }
-        while (!worklist.empty()) {
-            BasicBlock* i = worklist.front();
-            worklist.pop();
-            if (checked.count(i)) continue;
-            if (!PDT.dominates(BB, i)) {
-                pdf.push_back(i);
-                checked.insert(i);
-                continue;
-            }
-            checked.insert(i);
-            for (BasicBlock* j : predecessors(i)) {
-                worklist.push(j);
-            }
-        }
-        return pdf;
-    }
 
-    llvm::BasicBlock *succPostDom(llvm::BasicBlock *from, llvm::BasicBlock *to)
-    {
-        for (llvm::BasicBlock *succ : llvm::successors(from))
-        {
-            if (PDT.dominates(to, succ))
-            {
-                return succ;
-            }
-        }
-        return nullptr;
-    }
+
+
 
     SSAPredicate* truth() {
         SSAPredicate* truth = new SSAPredicate();
@@ -336,47 +302,37 @@ private:
         {
             return it->second;
         }
-
-        BasicBlock *predBB = BB->getSinglePredecessor();
-        if (predBB && DT.dominates(BB, predBB) && PDT.dominates(predBB, BB))
-        {
-            return truth();
+        std::vector<SSAPredicate *> preds;
+        for (auto pred : predecessors(BB)) {
+            SSAPredicate *edgePred = edgeCondition(pred, BB);
+            if (edgePred->kind != SSAPredicate::True) {
+                preds.push_back(edgePred);
+            } else {
+                SSAPredicate *predPred = getControlPredicate(pred);
+                if (predPred->kind != SSAPredicate::True) {
+                    preds.push_back(predPred);
+                } else {
+                    SSAPredicate *truePred = new SSAPredicate();
+                    truePred->kind = SSAPredicate::True;
+                    predicateCache[BB] = truePred;
+                    return truePred;
+                }
+            }
         }
-
-        auto pdf = getPostDominanceFrontier(BB);
-
-        if (pdf.empty())
-        {
+        if (preds.empty()) {
             SSAPredicate *truePred = new SSAPredicate();
             truePred->kind = SSAPredicate::True;
             predicateCache[BB] = truePred;
             return truePred;
         }
-
-        SSAPredicate *result = nullptr;
-        for (llvm::BasicBlock *BPrime : pdf)
-        {
-            llvm::BasicBlock *succ = succPostDom(BPrime, BB);
-            if (!succ) {
-                continue;
-            }
-
-            SSAPredicate *edgePred = getEdgePredicate(BPrime, succ);
-            if (!result)
-            {
-                result = edgePred;
-            }
-            else
-            {
-                SSAPredicate *orPred = new SSAPredicate();
-                orPred->kind = SSAPredicate::Or;
-                orPred->left = result;
-                orPred->right = edgePred;
-                result = simplifyPredicate(orPred);
-            }
+        SSAPredicate *result = preds[0];
+        for (size_t i = 1; i < preds.size(); ++i) {
+            SSAPredicate *orPred = new SSAPredicate();
+            orPred->kind = SSAPredicate::Or;
+            orPred->left = result;
+            orPred->right = preds[i];
+            result = simplifyPredicate(orPred);
         }
-
-        result = simplifyPredicate(result);
         predicateCache[BB] = result;
         return result;
     }
@@ -633,49 +589,6 @@ public:
         return node;
     }
 
-    Value* cloneAndRemap(Value* v, BasicBlock* block, ValueToValueMapTy& VMap) {
-        if (auto it = VMap.find(v); it != VMap.end()) {
-            return (Value*)it->second;
-        }
-        if (auto inst = dyn_cast<Instruction>(v)) {
-            Instruction* clone = inst->clone();
-            for (unsigned i = 0; i < clone->getNumOperands(); ++i) {
-                Value* op = clone->getOperand(i);
-                clone->setOperand(i, cloneAndRemap(op, block, VMap));
-            }
-            block->getInstList().push_back(clone);
-            return clone;
-        } else {
-            return v;
-        }
-    }
-
-    Value* lowerPredicate(SSAPredicate* pred, BasicBlock* block, ValueToValueMapTy& VMap) {
-        switch(pred->kind) {
-            case SSAPredicate::True:
-                return ConstantInt::getTrue(block->getContext());
-            case SSAPredicate::Condition: {
-                return cloneAndRemap(pred->condition, block, VMap);
-            }
-            case SSAPredicate::Not: {
-                Value* inner = lowerPredicate(pred->left, block, VMap);
-                return BinaryOperator::CreateNot(inner, "", block);
-            }
-            case SSAPredicate::And: {
-                Value* left = lowerPredicate(pred->left, block, VMap);
-                Value* right = lowerPredicate(pred->right, block, VMap);
-                return BinaryOperator::CreateAnd(left, right, "", block);
-            }
-            case SSAPredicate::Or: {
-                Value* left = lowerPredicate(pred->left, block, VMap);
-                Value* right = lowerPredicate(pred->right, block, VMap);
-                return BinaryOperator::CreateOr(left, right, "", block);
-            }
-            default:
-                return ConstantInt::getTrue(block->getContext());
-        }
-    }
-
     BasicBlock* lowerToIR(std::variant<SSAFunction *, SSALoop *> function_or_loop, 
                BasicBlock *entry, LLVMContext &ctx)
     {
@@ -688,12 +601,12 @@ public:
     {
         errs() << "Lowering loop to IR, wish us luck\n";
         BasicBlock *header = BasicBlock::Create(ctx, "loop_header", entry->getParent());
+        blockBuilder.append(header, (*loop)->whileCondition);
         BasicBlock *latch = BasicBlock::Create(ctx, "loop_latch", entry->getParent()); 
         BasicBlock *exit = BasicBlock::Create(ctx, "loop_exit", entry->getParent()); 
         for (auto& binding : (*loop)->muBindings) {
             PHINode* phi = eliminateMu(&binding, header, entry, latch);
             bindingToPhi[&binding] = phi;
-            // Find original phi
             for (auto& pair : valueMap) {
                 if (auto mu = std::get_if<SSAMuNode*>(&pair.second)) {
                     if (*mu == binding.muNode) {
@@ -703,15 +616,15 @@ public:
                 }
             }
         } 
+        BasicBlock *bodyBlock = header;
         for (size_t i = 0; i < (*loop)->bodyItems.size(); ++i)
         {
             auto &item = (*loop)->bodyItems[i];
         
-            BasicBlock* block = blockBuilder.get_block(item.Predicate);
-            
             if (auto innerLoop = std::get_if<SSALoop *>(&item.content))
             {
-                block = lowerToIR(*innerLoop, block, ctx);
+                bodyBlock = lowerToIR(*innerLoop, bodyBlock, ctx);
+                blockBuilder.append(bodyBlock, item.Predicate);
             }
             else if (auto instr = std::get_if<Instruction *>(&item.content))
             {
@@ -719,18 +632,10 @@ public:
                 VMap[*instr] = clone;
                 RemapInstruction(clone, VMap, RF_NoModuleLevelChanges);
                 //errs() << "Inserting instruction: " << *clone << "\n";
-                block->getInstList().push_back(clone);
+                bodyBlock->getInstList().push_back(clone);
             }
         }
-        if (!(*loop)->bodyItems.empty())
-        {
-            auto &lastItem = (*loop)->bodyItems.back();
-            BasicBlock *lastBlock = blockBuilder.get_block(lastItem.Predicate);
-            BranchInst::Create(latch, lastBlock);
-        }
-        Value* cond = lowerPredicate((*loop)->whileCondition, latch, VMap);
-        BranchInst::Create(header, exit, cond, latch);
-        BranchInst::Create(latch, header);
+        blockBuilder.append(latch, truth());
         for (auto& binding : (*loop)->muBindings) {
             PHINode* phi = bindingToPhi[&binding];
             if(auto init = std::get_if<llvm::Value*>(&binding.muNode->init))
@@ -750,6 +655,9 @@ public:
                 }
             }
         }
+        BasicBlock* block = blockBuilder.get_block((*loop)->whileCondition);
+        BranchInst::Create(header, block);
+        BranchInst::Create(exit, blockBuilder.getTrueBlock());
         return exit;
     }
     else if (auto function = std::get_if<SSAFunction *>(&function_or_loop))
@@ -759,8 +667,6 @@ public:
         for (size_t i = 0; i < (*function)->items.size(); ++i)
         {
             auto &item = (*function)->items[i];
-            
-            currentBlock = blockBuilder.get_block(item.Predicate);
             
             if (auto loop = std::get_if<SSALoop *>(&item.content))
             {

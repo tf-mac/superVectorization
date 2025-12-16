@@ -8,7 +8,7 @@ int test(int x) {
 int main() {
     for (int i = 0; i < 1000; ++i) {
         int j = test(i);
-        if (1) {
+        if (j < 0) {
             return -1;
         }
     }
