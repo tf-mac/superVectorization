@@ -3,6 +3,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Scalar/SimplifyCFG.h"
 #include "predicatedSSA.h"
 
 using namespace llvm;
@@ -36,6 +37,8 @@ llvmGetPassPluginInfo() {
                         MPM.addPass(createModuleToFunctionPassAdaptor(
                             LoopSimplifyPass()));
                         MPM.addPass(SuperVectorizationPass());
+                        MPM.addPass(createModuleToFunctionPassAdaptor(
+                            SimplifyCFGPass()));
                         return true;   
                     }
                     return false;

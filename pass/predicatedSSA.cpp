@@ -42,52 +42,93 @@ bool predicatesEqual(SSAPredicate *A, SSAPredicate *B)
 class BlockBuilder
 {
 private:
-    std::unordered_map<SSAPredicate *, std::vector<llvm::BasicBlock *>> predicateBlockMap;
+    //std::unordered_map<SSAPredicate *, BasicBlock*> predicateBlockMap;
     BasicBlock *entryBlock;
+    BasicBlock * trueBlock;
+    SSAPredicate* activePredicate;
     BasicBlock * last;
     Function *currentFunction;
+    ValueToValueMapTy* VMap;
 
 public:
-    BlockBuilder(llvm::BasicBlock *entry)
-        : entryBlock(entry), last(entry), currentFunction(entry->getParent()) {}
+    BlockBuilder(llvm::BasicBlock *entry, ValueToValueMapTy* vmap)
+        : entryBlock(entry), last(entry), trueBlock(entry), currentFunction(entry->getParent()), VMap(vmap) {
+            activePredicate = new SSAPredicate();
+            activePredicate->kind = SSAPredicate::True;
+        }
 
-    BasicBlock *get_block(SSAPredicate *pred, BasicBlock *insertAfter = nullptr) {
-        auto it = predicateBlockMap.find(pred);
-        if (it == predicateBlockMap.end()) {
-            predicateBlockMap[pred] = std::vector<BasicBlock *>();
-            it = predicateBlockMap.find(pred);
+    BasicBlock *get_block(SSAPredicate *pred) {
+        // Simplified version without caching for expediency
+        if (predicatesEqual(pred, activePredicate)) {
+            return last;
         }
-        auto &blocks = it->second;
-        if (blocks.empty() || blocks.back()->getTerminator()) {
-            BasicBlock* newBlock = BasicBlock::Create(entryBlock->getContext(), 
+        if (pred->kind == SSAPredicate::True) {
+            return last;
+        }
+        BasicBlock* newBlock = BasicBlock::Create(entryBlock->getContext(), 
                                             "pred_block", 
-                                            currentFunction,
-                                            insertAfter ? insertAfter->getNextNode() : nullptr);
-            blocks.push_back(newBlock);
+                                            currentFunction);
+        BasicBlock* newTrue = BasicBlock::Create(entryBlock->getContext(), 
+                                            "true_block", 
+                                            currentFunction);
+
+        switch(pred->kind) {
+            case SSAPredicate::Condition: {
+                Value *remapped_cond;
+                auto it = VMap->find(pred->condition);
+                if (it != VMap->end()) {
+                    remapped_cond = (Value*)it->second;
+                } else {
+                    remapped_cond = pred->condition;
+                }
+                BasicBlock* newBlock = BasicBlock::Create(entryBlock->getContext(), 
+                                            "pred_block", 
+                                            currentFunction);
+                BasicBlock* newTrue = BasicBlock::Create(entryBlock->getContext(), 
+                                            "true_block", 
+                                            currentFunction);
+                last = newBlock;
+                trueBlock = newTrue;
+                return last;
+                break;
+            }
+            case SSAPredicate::Not: {
+                SSAPredicate* inner = pred->left;
+                get_block(inner);
+                return trueBlock;
+                break;
+            }
+            case SSAPredicate::And: {
+                BasicBlock* leftBlock = get_block(pred->left);
+                BasicBlock* rightBlock = BasicBlock::Create(entryBlock->getContext(), 
+                                                    "and_right", 
+                                                    currentFunction);
+                last = newBlock;
+                return newBlock;
+                break;
+            }
+            case SSAPredicate::Or: {
+                BasicBlock* leftBlock = get_block(pred->left);
+                BasicBlock* rightBlock = get_block(pred->right);
+                last = newBlock;
+                return newBlock;
+                break;
+            }
+            default:
+                break;
         }
-        BasicBlock *block = blocks.back();
-        if (pred->kind == SSAPredicate::And) {
-            BasicBlock* leftBlock = get_block(pred->left, insertAfter);
-            BasicBlock* rightBlock = get_block(pred->right, insertAfter);
-            if (!leftBlock->getTerminator()) {
-                BranchInst::Create(rightBlock, leftBlock);
-            }
-            // For And, return rightBlock
-            return rightBlock;
-        } else if (pred->kind == SSAPredicate::Or) {
-            BasicBlock* leftBlock = get_block(pred->left, insertAfter);
-            BasicBlock* rightBlock = get_block(pred->right, insertAfter);
-            BasicBlock* mergeBlock = BasicBlock::Create(entryBlock->getContext(), "or_merge", currentFunction, insertAfter ? insertAfter->getNextNode() : nullptr);
-            if (!leftBlock->getTerminator()) {
-                BranchInst::Create(mergeBlock, leftBlock);
-            }
-            if (!rightBlock->getTerminator()) {
-                BranchInst::Create(mergeBlock, rightBlock);
-            }
-            return mergeBlock;
-        } else {
-            return block;
-        }
+        
+        return last;
+    }
+
+    void append(BasicBlock* block, SSAPredicate* pred) {
+        BasicBlock* predBlock = get_block(pred);
+        BranchInst::Create(block, predBlock);
+        last = block;
+    }
+
+    BasicBlock* getTrueBlock() {
+        return trueBlock;
     }
 
     void seal_off(BasicBlock* target) {
@@ -106,6 +147,7 @@ private:
     llvm::DominatorTree DT;
     llvm::PostDominatorTree PDT;
     llvm::LoopInfo LI;
+    ValueToValueMapTy VMap;
 
     std::unordered_map<llvm::BasicBlock *, SSAPredicate *> predicateCache;
 
@@ -571,90 +613,140 @@ public:
 
         if(auto init = std::get_if<llvm::Value*>(&muNode->muNode->init))
         {
-            node->addIncoming(*init, entry);
-        }
-        else if(auto initMu = std::get_if<SSAMuNode*>(&muNode->muNode->init))
-        {
-            PHINode* initPhi = eliminateMu(new SSALoop::MuBinding{muNode->variable + "_init", *initMu}, header, entry, latch);
-            node->addIncoming(initPhi, entry);
+            if(auto initMu = std::get_if<SSAMuNode*>(&muNode->muNode->init))
+            {
+                PHINode* initPhi = eliminateMu(new SSALoop::MuBinding{muNode->variable + "_init", *initMu}, header, entry, latch);
+                node->addIncoming(initPhi, entry);
+            }
         }
         if(auto rec = std::get_if<llvm::Value*>(&muNode->muNode->rec))
         {
-            node->addIncoming(*rec, latch);
-        }
-        else if(auto recMu = std::get_if<SSAMuNode*>(&muNode->muNode->rec))
-        {
-            PHINode* recPhi = eliminateMu(new SSALoop::MuBinding{muNode->variable + "_rec", *recMu}, header, entry, latch);
-            node->addIncoming(recPhi, latch);
+            if(auto recMu = std::get_if<SSAMuNode*>(&muNode->muNode->rec))
+            {
+                PHINode* recPhi = eliminateMu(new SSALoop::MuBinding{muNode->variable + "_rec", *recMu}, header, entry, latch);
+                node->addIncoming(recPhi, latch);
+            }
         }
         return node;
+    }
+
+    Value* cloneAndRemap(Value* v, BasicBlock* block, ValueToValueMapTy& VMap) {
+        if (auto it = VMap.find(v); it != VMap.end()) {
+            return (Value*)it->second;
+        }
+        if (auto inst = dyn_cast<Instruction>(v)) {
+            Instruction* clone = inst->clone();
+            for (unsigned i = 0; i < clone->getNumOperands(); ++i) {
+                Value* op = clone->getOperand(i);
+                clone->setOperand(i, cloneAndRemap(op, block, VMap));
+            }
+            block->getInstList().push_back(clone);
+            return clone;
+        } else {
+            return v;
+        }
+    }
+
+    Value* lowerPredicate(SSAPredicate* pred, BasicBlock* block, ValueToValueMapTy& VMap) {
+        switch(pred->kind) {
+            case SSAPredicate::True:
+                return ConstantInt::getTrue(block->getContext());
+            case SSAPredicate::Condition: {
+                return cloneAndRemap(pred->condition, block, VMap);
+            }
+            case SSAPredicate::Not: {
+                Value* inner = lowerPredicate(pred->left, block, VMap);
+                return BinaryOperator::CreateNot(inner, "", block);
+            }
+            case SSAPredicate::And: {
+                Value* left = lowerPredicate(pred->left, block, VMap);
+                Value* right = lowerPredicate(pred->right, block, VMap);
+                return BinaryOperator::CreateAnd(left, right, "", block);
+            }
+            case SSAPredicate::Or: {
+                Value* left = lowerPredicate(pred->left, block, VMap);
+                Value* right = lowerPredicate(pred->right, block, VMap);
+                return BinaryOperator::CreateOr(left, right, "", block);
+            }
+            default:
+                return ConstantInt::getTrue(block->getContext());
+        }
     }
 
     BasicBlock* lowerToIR(std::variant<SSAFunction *, SSALoop *> function_or_loop, 
                BasicBlock *entry, LLVMContext &ctx)
     {
-    BlockBuilder blockBuilder = BlockBuilder(entry);
+    BlockBuilder blockBuilder = BlockBuilder(entry, &VMap);
     eliminatePhiNodes(function_or_loop, blockBuilder);
+
+    std::map<SSALoop::MuBinding*, PHINode*> bindingToPhi;
 
     if (auto loop = std::get_if<SSALoop *>(&function_or_loop))
     {
+        errs() << "Lowering loop to IR, wish us luck\n";
         BasicBlock *header = BasicBlock::Create(ctx, "loop_header", entry->getParent());
-        BasicBlock *latch = BasicBlock::Create(ctx, "loop_latch", entry->getParent());
-        BasicBlock *exit = BasicBlock::Create(ctx, "loop_exit", entry->getParent());
-        
-        if (entry->getTerminator() == nullptr)
-        {
-            BranchInst::Create(header, entry);
-        }
-        
+        BasicBlock *latch = BasicBlock::Create(ctx, "loop_latch", entry->getParent()); 
+        BasicBlock *exit = BasicBlock::Create(ctx, "loop_exit", entry->getParent()); 
+        for (auto& binding : (*loop)->muBindings) {
+            PHINode* phi = eliminateMu(&binding, header, entry, latch);
+            bindingToPhi[&binding] = phi;
+            // Find original phi
+            for (auto& pair : valueMap) {
+                if (auto mu = std::get_if<SSAMuNode*>(&pair.second)) {
+                    if (*mu == binding.muNode) {
+                        VMap[pair.first] = phi;
+                        break;
+                    }
+                }
+            }
+        } 
         for (size_t i = 0; i < (*loop)->bodyItems.size(); ++i)
         {
             auto &item = (*loop)->bodyItems[i];
-            BasicBlock *block = nullptr;
-            
-            BasicBlock *pred = nullptr;
-            if (i == 0)
-            {
-                pred = header;
-            }
-            else if (i > 0)
-            {
-                auto &prevItem = (*loop)->bodyItems[i - 1];
-                pred = blockBuilder.get_block(prevItem.Predicate);
-            }
         
-            block = blockBuilder.get_block(item.Predicate, pred);
+            BasicBlock* block = blockBuilder.get_block(item.Predicate);
             
             if (auto innerLoop = std::get_if<SSALoop *>(&item.content))
             {
-                lowerToIR(*innerLoop, block, ctx);
+                block = lowerToIR(*innerLoop, block, ctx);
             }
             else if (auto instr = std::get_if<Instruction *>(&item.content))
             {
                 Instruction *clone = (*instr)->clone();
+                VMap[*instr] = clone;
+                RemapInstruction(clone, VMap, RF_NoModuleLevelChanges);
                 errs() << "Inserting instruction: " << *clone << "\n";
-                if (Instruction *term = block->getTerminator())
-                {
-                    clone->insertBefore(term);
-                }
-                else
-                {
-                    block->getInstList().push_back(clone);
-                }
+                block->getInstList().push_back(clone);
             }
         }
-        
         if (!(*loop)->bodyItems.empty())
         {
             auto &lastItem = (*loop)->bodyItems.back();
             BasicBlock *lastBlock = blockBuilder.get_block(lastItem.Predicate);
             BranchInst::Create(latch, lastBlock);
         }
-        
-        
-        BranchInst::Create(header, exit, /* condition */ nullptr, latch);
-        
-        BranchInst::Create(exit, header);
+        Value* cond = lowerPredicate((*loop)->whileCondition, latch, VMap);
+        BranchInst::Create(header, exit, cond, latch);
+        BranchInst::Create(latch, header);
+        for (auto& binding : (*loop)->muBindings) {
+            PHINode* phi = bindingToPhi[&binding];
+            if(auto init = std::get_if<llvm::Value*>(&binding.muNode->init))
+            {
+                if(!std::get_if<SSAMuNode*>(&binding.muNode->init)) {
+                    auto it = VMap.find(*init);
+                    Value* remapped_init = (it != VMap.end()) ? (Value*)it->second : *init;
+                    phi->addIncoming(remapped_init, entry);
+                }
+            }
+            if(auto rec = std::get_if<llvm::Value*>(&binding.muNode->rec))
+            {
+                if(!std::get_if<SSAMuNode*>(&binding.muNode->rec)) {
+                    auto it = VMap.find(*rec);
+                    Value* remapped_rec = (it != VMap.end()) ? (Value*)it->second : *rec;
+                    phi->addIncoming(remapped_rec, latch);
+                }
+            }
+        }
         return exit;
     }
     else if (auto function = std::get_if<SSAFunction *>(&function_or_loop))
@@ -664,41 +756,20 @@ public:
         for (size_t i = 0; i < (*function)->items.size(); ++i)
         {
             auto &item = (*function)->items[i];
-            BasicBlock *block = nullptr;
             
-            if (i == 0)
-            {
-                block = blockBuilder.get_block(item.Predicate);
-                if (currentBlock->getTerminator() == nullptr)
-                {
-                    BranchInst::Create(block, currentBlock);
-                }
-            }
-            else
-            {
-                auto &prevItem = (*function)->items[i-1];
-                BasicBlock *prevBlock = blockBuilder.get_block(prevItem.Predicate);
-                block = blockBuilder.get_block(item.Predicate, prevBlock);
-            }
-            
-            currentBlock = block;
+            currentBlock = blockBuilder.get_block(item.Predicate);
             
             if (auto loop = std::get_if<SSALoop *>(&item.content))
             {
-                lowerToIR(*loop, block, ctx);
+                currentBlock = lowerToIR(*loop, currentBlock, ctx);
             }
             else if (auto instr = std::get_if<Instruction *>(&item.content))
             {
                 Instruction *clone = (*instr)->clone();
+                VMap[*instr] = clone;
+                RemapInstruction(clone, VMap, RF_NoModuleLevelChanges);
                 errs() << "Inserting instruction: " << *clone << "\n";
-                if (Instruction *term = block->getTerminator())
-                {
-                    clone->insertBefore(term);
-                }
-                else
-                {
-                    block->getInstList().push_back(clone);
-                }
+                currentBlock->getInstList().push_back(clone);
             }
         }
         
@@ -726,13 +797,21 @@ void lowerToIR(SSAFunction *function, llvm::Function &llvmFunc)
         if (&BB != newEntry)
             OldBlocks.push_back(&BB);
     converter.lowerToIR(function, newEntry, llvmFunc.getContext());
-    
-    verifyFunction(llvmFunc, &errs());
-
+    newEntry->moveBefore(&llvmFunc.getEntryBlock());
+    //verifyFunction(llvmFunc, &errs());
+    errs() << llvmFunc << "\n";
+    errs() << "We done lowering to IR.\n";
     for (auto *BB : OldBlocks)
         BB->dropAllReferences();
     for (auto *BB : OldBlocks)
         BB->eraseFromParent();
+    errs() << llvmFunc << "\n";
+    std::vector<BasicBlock*> blocksToErase;
+    for (auto &BB : llvmFunc)
+        if (predecessors(&BB).empty() && &BB != &llvmFunc.getEntryBlock())
+            blocksToErase.push_back(&BB);
+    //for (auto *BB : blocksToErase)
+      //  BB->eraseFromParent();
     verifyFunction(llvmFunc, &errs());
-    errs() << "We done lowering to IR.\n";
+    errs() << "We done frfr.\n";
 }
