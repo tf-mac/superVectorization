@@ -4,6 +4,8 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Dominators.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/Transforms/Utils/ValueMapper.h"
 #include "llvm/IR/Verifier.h"
 #include <queue>
 #include <unordered_map>
@@ -11,7 +13,6 @@
 
 using namespace llvm;
 
-// Compare two predicates for equality
 bool predicatesEqual(SSAPredicate *A, SSAPredicate *B)
 {
     if (A->kind != B->kind)
@@ -41,7 +42,7 @@ bool predicatesEqual(SSAPredicate *A, SSAPredicate *B)
 class BlockBuilder
 {
 private:
-    std::unordered_map<SSAPredicate *, llvm::BasicBlock *> predicateBlockMap;
+    std::unordered_map<SSAPredicate *, std::vector<llvm::BasicBlock *>> predicateBlockMap;
     BasicBlock *entryBlock;
     BasicBlock * last;
     Function *currentFunction;
@@ -50,22 +51,51 @@ public:
     BlockBuilder(llvm::BasicBlock *entry)
         : entryBlock(entry), last(entry), currentFunction(entry->getParent()) {}
 
-    BasicBlock *get_block(SSAPredicate *pred, BasicBlock *insertAfter = nullptr)
-    {
-        for (auto &pair : predicateBlockMap)
-        {
-            if (predicatesEqual(pair.first, pred))
-            {
-                return pair.second;
-            }
+    BasicBlock *get_block(SSAPredicate *pred, BasicBlock *insertAfter = nullptr) {
+        auto it = predicateBlockMap.find(pred);
+        if (it == predicateBlockMap.end()) {
+            predicateBlockMap[pred] = std::vector<BasicBlock *>();
+            it = predicateBlockMap.find(pred);
         }
-        BasicBlock* newBlock = BasicBlock::Create(entryBlock->getContext(), 
-                                        "pred_block", 
-                                        currentFunction,
-                                        insertAfter->getNextNode());
-        
-        predicateBlockMap[pred] = newBlock;
-        return newBlock;
+        auto &blocks = it->second;
+        if (blocks.empty() || blocks.back()->getTerminator()) {
+            BasicBlock* newBlock = BasicBlock::Create(entryBlock->getContext(), 
+                                            "pred_block", 
+                                            currentFunction,
+                                            insertAfter ? insertAfter->getNextNode() : nullptr);
+            blocks.push_back(newBlock);
+        }
+        BasicBlock *block = blocks.back();
+        if (pred->kind == SSAPredicate::And) {
+            BasicBlock* leftBlock = get_block(pred->left, insertAfter);
+            BasicBlock* rightBlock = get_block(pred->right, insertAfter);
+            if (!leftBlock->getTerminator()) {
+                BranchInst::Create(rightBlock, leftBlock);
+            }
+            // For And, return rightBlock
+            return rightBlock;
+        } else if (pred->kind == SSAPredicate::Or) {
+            BasicBlock* leftBlock = get_block(pred->left, insertAfter);
+            BasicBlock* rightBlock = get_block(pred->right, insertAfter);
+            BasicBlock* mergeBlock = BasicBlock::Create(entryBlock->getContext(), "or_merge", currentFunction, insertAfter ? insertAfter->getNextNode() : nullptr);
+            if (!leftBlock->getTerminator()) {
+                BranchInst::Create(mergeBlock, leftBlock);
+            }
+            if (!rightBlock->getTerminator()) {
+                BranchInst::Create(mergeBlock, rightBlock);
+            }
+            return mergeBlock;
+        } else {
+            return block;
+        }
+    }
+
+    void seal_off(BasicBlock* target) {
+        for (auto &block : *currentFunction) {
+                if (!block.getTerminator()) {
+                    BranchInst::Create(target, &block);
+                }
+            }
     }
 };
 
@@ -215,6 +245,24 @@ private:
         if (loop->getHeader() == from && LI.getLoopFor(to) == loop) {
             return truth();
         }
+        Loop* toLoop = LI.getLoopFor(to);
+        llvm::SmallVector<BasicBlock*> exitBlocks;
+        loop->getExitBlocks(exitBlocks);
+        for(BasicBlock* exit : exitBlocks) {
+            if (exit == to) {
+                errs() << "Exit edge from loop found: " << from->front() << " -> " << to->front() << "\n";
+                SSAPredicate* first = new SSAPredicate();
+                SSAPredicate* second = new SSAPredicate();
+                first->kind = SSAPredicate::Kind::And;
+                second->kind = SSAPredicate::Kind::And;
+                second->left = simplifyPredicate(getControlPredicate(from));
+                second->right = simplifyPredicate(edgeCondition(from, to));
+                first->left = simplifyPredicate(getControlPredicate(loop->getLoopPreheader()));
+                first->right = simplifyPredicate(second);
+                return first;
+            }
+        }
+
         if (to->getSinglePredecessor() == from) {
             SSAPredicate* edgePred = edgeCondition(from, to);
             if (edgePred->kind == SSAPredicate::True) {
@@ -227,22 +275,8 @@ private:
                 return first;
             }
         }
-        Loop* toLoop = LI.getLoopFor(to);
-        llvm::SmallVector<BasicBlock*> exitBlocks;
-        loop->getExitBlocks(exitBlocks);
-        for(BasicBlock* exit : exitBlocks) {
-            if (exit == to) {
-                SSAPredicate* first = new SSAPredicate();
-                SSAPredicate* second = new SSAPredicate();
-                first->kind = SSAPredicate::Kind::And;
-                second->kind = SSAPredicate::Kind::And;
-                second->left = simplifyPredicate(getControlPredicate(from));
-                second->right = simplifyPredicate(edgeCondition(from, to));
-                first->left = simplifyPredicate(getControlPredicate(loop->getLoopPreheader()));
-                first->right = simplifyPredicate(second);
-                return first;
-            }
-        }
+        
+        
         SSAPredicate* first = new SSAPredicate();
         first->kind = SSAPredicate::Kind::And;
         first->left = simplifyPredicate(getControlPredicate(from));
@@ -332,31 +366,24 @@ private:
         }
 
         predicateCache[header] = getControlPredicate(preheader);
-        Instruction *term = header->getTerminator();
-
-        SSAPredicate* result = nullptr;
-        SmallVector<std::pair<BasicBlock*, BasicBlock*>> exitEdges;
-        L->getExitEdges(exitEdges);
-        for (auto exits : exitEdges) {
-            BasicBlock* from = exits.first;
-            BasicBlock* to = exits.second;
-            SSAPredicate* edgePred = getEdgePredicate(from, to);
-            if (!result) {
-                result = edgePred;
+        llvm::SmallVector<std::pair<BasicBlock*, BasicBlock*>> exitBlocks;
+        L->getExitEdges(exitBlocks);
+        for(std::pair<BasicBlock*, BasicBlock*> exit : exitBlocks) {
+            SSAPredicate* first = getEdgePredicate(exit.first, exit.second);
+            if (ssaLoop->whileCondition == nullptr) {
+                SSAPredicate* second = new SSAPredicate();
+                second->kind = SSAPredicate::Kind::Not;
+                second->left = first;
+                ssaLoop->whileCondition = simplifyPredicate(second);
             } else {
                 SSAPredicate* orPred = new SSAPredicate();
-                orPred->kind = SSAPredicate::Kind::Or;
-                orPred->left = result;
-                orPred->right = edgePred;
-                result = simplifyPredicate(orPred);
-            }
-        }
-        if (llvm::BranchInst *br = llvm::dyn_cast<llvm::BranchInst>(term)) {
-            if (br->isConditional()) {
-                    SSAPredicate* condition = new SSAPredicate();
-                    condition->kind = SSAPredicate::Kind::Condition;
-                    condition->condition = br->getCondition();
-                    ssaLoop->whileCondition = condition;
+                orPred->kind = SSAPredicate::Kind::And;
+                SSAPredicate* second = new SSAPredicate();
+                second->kind = SSAPredicate::Kind::Not;
+                second->left = first;
+                orPred->left = ssaLoop->whileCondition;
+                orPred->right = second;
+                ssaLoop->whileCondition = simplifyPredicate(orPred);
             }
         }
         
@@ -563,9 +590,9 @@ public:
         return node;
     }
 
-   void lowerToIR(std::variant<SSAFunction *, SSALoop *> function_or_loop, 
+    BasicBlock* lowerToIR(std::variant<SSAFunction *, SSALoop *> function_or_loop, 
                BasicBlock *entry, LLVMContext &ctx)
-{
+    {
     BlockBuilder blockBuilder = BlockBuilder(entry);
     eliminatePhiNodes(function_or_loop, blockBuilder);
 
@@ -573,7 +600,6 @@ public:
     {
         BasicBlock *header = BasicBlock::Create(ctx, "loop_header", entry->getParent());
         BasicBlock *latch = BasicBlock::Create(ctx, "loop_latch", entry->getParent());
-        BranchInst::Create(header, latch);
         BasicBlock *exit = BasicBlock::Create(ctx, "loop_exit", entry->getParent());
         
         if (entry->getTerminator() == nullptr)
@@ -622,16 +648,14 @@ public:
         {
             auto &lastItem = (*loop)->bodyItems.back();
             BasicBlock *lastBlock = blockBuilder.get_block(lastItem.Predicate);
-            if (lastBlock && lastBlock->getTerminator() == nullptr)
-            {
-                BranchInst::Create(latch, lastBlock);
-            }
+            BranchInst::Create(latch, lastBlock);
         }
         
         
         BranchInst::Create(header, exit, /* condition */ nullptr, latch);
         
         BranchInst::Create(exit, header);
+        return exit;
     }
     else if (auto function = std::get_if<SSAFunction *>(&function_or_loop))
     {
@@ -677,8 +701,13 @@ public:
                 }
             }
         }
+        
+        blockBuilder.seal_off(currentBlock);
+        // In theory we shouldn't need a terminator, as the last instruction should be one. If its not, complain!
+        if (currentBlock->getTerminator() == nullptr) errs() << "Warning: Block " << currentBlock->front() << " has no terminator!\n";
     }
     restore_ssa(function_or_loop, blockBuilder);
+    return entry;
 }
 };
 
@@ -691,17 +720,19 @@ SSAFunction *convertToPredicatedSSA(llvm::Function &llvmFunc)
 void lowerToIR(SSAFunction *function, llvm::Function &llvmFunc)
 {
     SSAPredicatedSSAConverter converter(llvmFunc);
-    BasicBlock* newEntry = BasicBlock::Create(llvmFunc.getContext());
-    converter.lowerToIR(function, newEntry, llvmFunc.getContext());
-    newEntry->insertInto(&llvmFunc, &llvmFunc.getEntryBlock());
+    BasicBlock* newEntry = BasicBlock::Create(llvmFunc.getContext(), "entry", &llvmFunc);
     std::vector<BasicBlock *> OldBlocks;
     for (auto &BB : llvmFunc)
         if (&BB != newEntry)
             OldBlocks.push_back(&BB);
+    converter.lowerToIR(function, newEntry, llvmFunc.getContext());
+    
+    verifyFunction(llvmFunc, &errs());
 
     for (auto *BB : OldBlocks)
         BB->dropAllReferences();
     for (auto *BB : OldBlocks)
         BB->eraseFromParent();
-    verifyFunction(llvmFunc);
+    verifyFunction(llvmFunc, &errs());
+    errs() << "We done lowering to IR.\n";
 }
